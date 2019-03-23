@@ -31,6 +31,7 @@
 (require 'jupyter-org-client)
 
 (declare-function org-babel-jupyter-initiate-session "ob-jupyter" (&optional session params))
+(declare-function org-babel-jupyter-src-block-session "ob-jupyter" ())
 (declare-function org-in-src-block-p "org" (&optional inside))
 (declare-function org-element-context "org-element" (&optional element))
 (declare-function org-element-property "org-element" (property element))
@@ -136,14 +137,66 @@ With prefix arg NEW, always insert new cell."
     (org-babel-next-src-block)))
 
 ;;;###autoload
-(defun jupyter-org-execute-to-point ()
-  "Execute all the src blocks that start before point."
-  (interactive)
-  (let ((p (point)))
+(defun jupyter-org-execute-to-point (any)
+  "Execute Jupyter source blocks that start before point.
+Only execute Jupyter source blocks that have the same session
+selected in the following way:
+
+   * Use the Jupyter session of the source block at `point'.
+
+   * If `point' is not at a source block:
+
+       * If there is only one session that can be used, then use
+         it.
+
+       * Otherwise, if multiple session can be used, ask the user
+         to select a session.
+
+   * If a Jupyter session could not be found, don't use a session
+     and evaluate all source blocks before point.
+
+NOTE: If a session could be selected, only Jupyter source blocks
+that have the same session are evaluated.
+
+With a prefix argument, in addition to evaluating source blocks
+with the selected session, evaluate ANY source block that doesn't
+have a Jupyter session, e.g. shell source blocks."
+  (interactive "P")
+  (let* ((p (point))
+         (session
+          (or (org-babel-jupyter-src-block-session)
+              ;; If there is only one possible Jupyter session use it. If
+              ;; multiple Jupyter sessions exist, ask the user to select one.
+              (save-excursion
+                (goto-char (point-min))
+                (let ((sessions
+                       ;; Return the available sessions in the buffer, the
+                       ;; closest one to point is the first element.
+                       (cl-loop
+                        while (and (ignore-errors (org-babel-next-src-block))
+                                   (<= (point) p))
+                        for session = (org-babel-jupyter-src-block-session)
+                        if (and session (not (member session sessions)))
+                        collect session into sessions
+                        finally return (nreverse sessions))))
+                  (if (> (length sessions) 1)
+                      (completing-read "Select session: " sessions)
+                    (car sessions)))))))
     (save-excursion
       (goto-char (point-min))
-      (while (and (org-babel-next-src-block) (< (point) p))
-        (org-babel-execute-src-block)))))
+      (while (and (ignore-errors (org-babel-next-src-block)) (<= (point) p))
+        ;; If there is no SESSION that can be found, just evaluate any source
+        ;; block.
+        ;;
+        ;; If a Jupyter based SESSION could be found, only source blocks that
+        ;; have a Jupyter session matching SESSION are evaluated. When a
+        ;; source block doesn't have a Jupyter session, it is only evaluated
+        ;; when ANY is non-nil.
+        (when (or (null session)
+                  (let ((this-session (org-babel-jupyter-src-block-session)))
+                    (if (null this-session) any
+                      (equal session this-session))))
+          (org-babel-execute-src-block))))))
 
 ;;;###autoload
 (defun jupyter-org-inspect-src-block ()
@@ -163,12 +216,17 @@ With prefix arg NEW, always insert new cell."
   (org-babel-execute-src-block-maybe))
 
 ;;;###autoload
-(defun jupyter-org-restart-and-execute-to-point ()
-  "Kill the kernel and run src-blocks to point."
-  (interactive)
+(defun jupyter-org-restart-and-execute-to-point (any)
+  "Kill the kernel and run all Jupyter src-blocks to point.
+With a prefix argument, run ANY source block that doesn't have a
+Jupyter session as well.
+
+See `jupyter-org-execute-to-point' for more information on which
+source blocks are evaluated."
+  (interactive "P")
   (jupyter-org-with-src-block-client
    (jupyter-repl-restart-kernel))
-  (jupyter-org-execute-to-point))
+  (jupyter-org-execute-to-point any))
 
 ;;;###autoload
 (defun jupyter-org-restart-kernel-execute-buffer ()
